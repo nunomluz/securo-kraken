@@ -244,7 +244,6 @@ def test_sign_secret_is_base64():
 
 def test_malformed_key_is_needs_auth_without_echo():
     bad = "abc
-
 X"
     with pytest.raises(NeedsAuth) as exc:
         Client(bad, API_SECRET, http=FakeHttp({}))
