@@ -240,3 +240,20 @@ def test_empty_key_is_needs_auth():
 
 def test_sign_secret_is_base64():
     assert base64.b64decode(API_SECRET)
+
+
+def test_malformed_key_is_needs_auth_without_echo():
+    bad = "abc
+
+X"
+    with pytest.raises(NeedsAuth) as exc:
+        Client(bad, API_SECRET, http=FakeHttp({}))
+    assert bad not in str(exc.value) and "abc" not in str(exc.value)
+
+
+def test_no_request_when_one_second_or_less_remains():
+    client, http, clock = make({BALANCE: [ok({})]}, budget=5)
+    clock.now += 4
+    with pytest.raises(OutOfTime):
+        client.private("BalanceEx")
+    assert http.calls == []

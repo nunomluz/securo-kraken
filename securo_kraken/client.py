@@ -35,6 +35,7 @@ COUNTER_DECAY = 0.33  # per second, starter tier
 COSTS = {"Ledgers": 2.0}
 PUBLIC_GAP = 1.0
 _MAX_CREDENTIAL = 512
+_KEY = re.compile(r"[A-Za-z0-9+/=_-]+")
 _METHOD = re.compile(r"[A-Za-z]{1,40}")
 
 # (method, url, headers, body, timeout seconds) -> (status, body)
@@ -92,6 +93,8 @@ class Client:
             raise NeedsAuth("Enter both the Kraken API key and private key.")
         if len(key) > _MAX_CREDENTIAL or len(secret) > _MAX_CREDENTIAL:
             raise NeedsAuth("The Kraken API key or private key is too long.")
+        if not _KEY.fullmatch(key):
+            raise NeedsAuth("The Kraken API key contains characters that are not allowed.")
         try:
             base64.b64decode(secret, validate=True)
         except (binascii.Error, ValueError):
@@ -178,14 +181,16 @@ class Client:
     def _request(self, method: str, url: str, headers: dict[str, str],
                  body: bytes | None) -> tuple[int, bytes]:
         remaining = self.remaining()
-        if remaining <= 0:
+        if remaining <= 1:
             raise OutOfTime("The sync time budget ran out.")
         # A slow request must not run past the budget (Securo kills the call at 60 s).
-        timeout = min(HTTP_TIMEOUT, max(remaining, 1))
+        timeout = min(HTTP_TIMEOUT, remaining)
         try:
             return self._http(method, url, headers, body, timeout)
         except (OSError, http.client.HTTPException) as exc:
             raise Transient(f"Couldn't reach Kraken ({type(exc).__name__}).") from None
+        except ValueError:
+            raise Transient("Couldn't reach Kraken (ValueError).") from None
 
     @staticmethod
     def _handle(status: int, data: bytes, method: str) -> dict:
