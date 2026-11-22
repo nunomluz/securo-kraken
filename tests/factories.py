@@ -40,3 +40,13 @@ def ok(result) -> Reply:
 
 def err(*errors: str) -> Reply:
     return 200, {"error": list(errors)}
+
+
+def ledger_row(id: str, refid: str, time: float, type: str, subtype: str = "", asset: str = "ZEUR",
+               amount: str = "0", fee: str = "0", aclass: str = "currency") -> tuple[str, dict]:
+    return id, {"refid": refid, "time": time, "type": type, "subtype": subtype,
+                "aclass": aclass, "asset": asset, "amount": amount, "fee": fee, "balance": "0"}
+
+
+def ledger_page(rows) -> dict:
+    return {"ledger": dict(rows), "count": None}
