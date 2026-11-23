@@ -20,6 +20,8 @@ from .numbers import q6
 from .prices import History
 
 MICRO = Decimal("0.01")
+ADJUST_PREFIX = "kraken:adjust:"
+_DAY_SECONDS = 86400
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
 _CENT = Decimal("0.01")
@@ -113,10 +115,10 @@ def exact_costs(trades_by_coin: dict[str, list[Trade]], valuation: str, history:
 
     Fixed: fiat paid and its fee at that time's rate; market: quantity x price then; zero: 0;
     carry: the exact cost its swap's sells took away; any sell takes away its share of the cost.
-    Run after `resolve`, so every price needed is cached. Sells go first at one instant.
+    Run after `resolve`, so every price needed is cached. Sells go first at one instant; the
+    adjustment sell (dated 00:00) goes after its day's buys, as Securo replays it.
     """
-    everything = sorted((trade for trades in trades_by_coin.values() for trade in trades),
-                        key=lambda trade: (trade.time, trade.kind == "buy", trade.id))
+    everything = sorted((trade for trades in trades_by_coin.values() for trade in trades), key=_exact_order)
     pricer = _Pricer(everything, valuation, history, pairs)
     units: dict[str, Decimal] = defaultdict(Decimal)
     cost: dict[str, Decimal] = defaultdict(Decimal)
@@ -133,6 +135,13 @@ def exact_costs(trades_by_coin: dict[str, list[Trade]], valuation: str, history:
         units[coin] += quantity
         cost[coin] += _exact(trade, pricer, removed)
     return {coin: cost[coin] if units[coin] > 0 else _ZERO for coin in trades_by_coin}
+
+
+def _exact_order(trade: Trade) -> tuple:
+    at = trade.time
+    if trade.id.startswith(ADJUST_PREFIX):
+        at = datetime.combine(trade.date, datetime.min.time(), UTC).timestamp() + _DAY_SECONDS
+    return at, trade.kind == "buy", trade.id
 
 
 def _exact(trade: Trade, pricer: "_Pricer", removed: dict[int, Decimal]) -> Decimal:

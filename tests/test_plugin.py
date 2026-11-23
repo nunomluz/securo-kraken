@@ -347,6 +347,15 @@ def test_micro_priced_coin_is_value_only_with_exact_cost():
     assert (pepe["purchase_price"], pepe["current_value"]) == ("0.48", "0.45")  # (0.34 + 0.62) / 2
 
 
+def test_exact_cost_takes_a_same_day_adjustment_after_the_buy():
+    rows = buy("LP1", WALL - 2 * 3600, "PEPE", "2000000", "0.62")  # 14:00 on the sync day
+    found = []
+    for balance in ("0", "1000000", "1500000"):
+        kraken = base_kraken(rows=rows, balances={"PEPE": balance}, ticker={"PEPEEUR": "0.0000003"})
+        found.append(holdings(run(kraken))["kraken:PEPE"]["purchase_price"])
+    assert found == ["0", "0.31", "0.465"]
+
+
 def test_value_only_is_sticky():
     kraken = base_kraken(rows=[], balances={"SOL": "100"}, ticker={"SOLEUR": "0.005"}, history={"SOLEUR": "0.02"})
     first = run(kraken)

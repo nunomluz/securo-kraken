@@ -41,6 +41,9 @@ def balancing(coin: str, trades: list[Trade], target: Decimal, today: date,
         if _lowest([*trades, opening_trade, candidate]) >= -TOLERANCE:
             adjust_date = kept_date
 
+    # A balancing trade no longer needed is sent once at FLOOR; after that `prev` says 0 and it is
+    # dropped here, and payload.diff's vanished-trade path keeps it at a FLOOR buy of no cost
+    # (+0.000001 units, at most 2 per coin: the opening and the adjustment).
     out: list[Trade] = []
     if opening > 0 or before_opening != 0:
         out.append(_make("opening", coin, "buy", "market", opening or FLOOR, opening_date))

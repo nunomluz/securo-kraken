@@ -96,7 +96,8 @@ def diff(trades_by_coin: dict[str, list[Trade]], sent: dict[str, list], *,
          today: date | None = None) -> tuple[dict[str, list[dict] | None], dict]:
     """Per coin, the trades to send (None: nothing) and the new `sent` state.
 
-    `sent` keeps, per coin, [external_id, short digest of (date, kind, quantity, price, fee)].
+    `sent` keeps, per coin, [external_id, short digest of (date, kind, quantity, price, fee)], plus
+    the date for a neutralised trade so it is not resent when the date it would get changes.
 
     A trade is sent when it is new or its (date, kind, quantity, price, fee) changed. A trade
     sent before and no longer produced is neutralised: resent as a floor-quantity buy at no cost
@@ -108,16 +109,18 @@ def diff(trades_by_coin: dict[str, list[Trade]], sent: dict[str, list], *,
     out: dict[str, list[dict] | None] = {}
     after = dict(sent)
     for coin in sorted(trades_by_coin):
-        before = {item[0]: item[1] for item in sent.get(coin, [])}
+        stored = {item[0]: item for item in sent.get(coin, [])}
+        before = {trade_id: item[1] for trade_id, item in stored.items()}
         now: dict[str, dict] = {}
         for trade in trades_by_coin[coin]:
             if q6(trade.quantity) > 0:  # Securo needs quantity > 0; the balancing trades cover the rest
                 now[trade.id] = _record(trade)
         first = min((record["date"] for record in now.values()), default=(today or date.today()).isoformat())
-        for trade_id in before:
-            if trade_id not in now:
-                now[trade_id] = {"external_id": trade_id, "kind": "buy", "date": first, "quantity": _FLOOR,
-                                 "price": "0", "fee": "0"}
+        gone = {trade_id: stored[trade_id][2] if len(stored[trade_id]) > 2 else first
+                for trade_id in before if trade_id not in now}
+        for trade_id, day in gone.items():
+            now[trade_id] = {"external_id": trade_id, "kind": "buy", "date": day, "quantity": _FLOOR,
+                             "price": "0", "fee": "0"}
         digests = {trade_id: _digest(record) for trade_id, record in now.items()}
         changes = [record for trade_id, record in now.items() if before.get(trade_id) != digests[trade_id]]
         if not changes:
@@ -130,7 +133,8 @@ def diff(trades_by_coin: dict[str, list[Trade]], sent: dict[str, list], *,
             continue
         left -= len(changes)
         out[coin] = changes
-        after[coin] = [[trade_id, digest] for trade_id, digest in digests.items()]
+        after[coin] = [[trade_id, digest, gone[trade_id]] if trade_id in gone else [trade_id, digest]
+                       for trade_id, digest in digests.items()]
     return out, after
 
 

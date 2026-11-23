@@ -374,3 +374,14 @@ def test_exact_costs_split_a_payment_by_market_value_and_zero_when_sold_out():
     ]
     trades, _ = book(moves, hist)
     assert exact_costs(trades, "EUR", hist, PAIRS) == {"BTC": D("301.5"), "ETH": D(0)}
+
+
+def test_exact_costs_sell_the_adjustment_after_the_days_buys():
+    """Securo replays a day's buys before its sells; the adjustment (dated 00:00) goes after them too."""
+    trades = trades_from_moves([fiat_buy("L1", "PEPE", DAY1 + 14 * HOUR, "2000000", "0.62")])
+    adjust = Trade(id="kraken:adjust:PEPE", coin="PEPE", date=date(2023, 11, 15), kind="sell",
+                   quantity=D("500000"), price=None, fee=D(0), pricing="avg", group=None, time=DAY1)
+    trades["PEPE"].append(adjust)
+    hist = history()
+    assert resolve(trades, "EUR", hist, PAIRS) == set()
+    assert exact_costs(trades, "EUR", hist, PAIRS) == {"PEPE": D("0.465")}

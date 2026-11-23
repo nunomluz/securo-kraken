@@ -62,8 +62,10 @@ def test_diff_vanished_trade_resent_at_floor():
                            "quantity": "0.000001", "price": "0", "fee": "0"}]
     out, _ = payload.diff({"BTC": [trade("kraken:L1", day=date(2026, 1, 3))]}, sent)
     assert out["BTC"] is None  # already at the floor: not resent again
-    out, _ = payload.diff({"BTC": []}, {"BTC": [["kraken:L9", "x"]]}, today=date(2026, 2, 1))
+    out, sent = payload.diff({"BTC": []}, {"BTC": [["kraken:L9", "x"]]}, today=date(2026, 2, 1))
     assert out["BTC"][0]["date"] == "2026-02-01"  # nothing left to date it by
+    out, _ = payload.diff({"BTC": []}, sent, today=date(2026, 2, 2))
+    assert out["BTC"] is None  # its date is kept: not resent every day
 
 
 def test_diff_sent_state_is_compact():
