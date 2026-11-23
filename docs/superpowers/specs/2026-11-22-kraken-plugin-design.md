@@ -208,7 +208,9 @@ Once listed, it is listed every sync (kept in state).
 
 - `external_id`: `kraken:<CCY>` (e.g. `kraken:EUR`).
 - `name`: `Kraken <CCY>`; `type: "investment"`; `currency: <CCY>`;
-  `institution_name: "Kraken"`; `institution_logo: "kraken"`.
+  `institution_logo: "kraken"`. No `institution_name` (amended 2026-11-23:
+  Securo displays an account by its institution's name when it has one, so
+  every currency showed as "Kraken").
 - `balance`: sum of `BalanceEx.balance` over every key in that family
   (`ZEUR` + `EUR.M` + `EUR.F` …). Fiat in Earn stays in the account.
 - `transactions` from fiat ledger entries, positive amounts with

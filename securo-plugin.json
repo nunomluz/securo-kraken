@@ -5,7 +5,7 @@
     "en": "Syncs a Kraken spot account as a connected bank, read-only: fiat cash and cash activity, one asset per coin (Earn included) and the trades behind them.",
     "pt": "Sincroniza uma conta spot da Kraken como banco ligado, só de leitura: saldos em moeda fiat e movimentos, um ativo por moeda (Earn incluído) e as transações que os explicam."
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "repository": "https://github.com/nunomluz/securo-kraken",
   "license": "MIT",
   "min_securo_version": "0.20.0",

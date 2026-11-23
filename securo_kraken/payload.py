@@ -17,7 +17,6 @@ from .numbers import number, q6
 
 CONTRACT = 1
 LOGO = "kraken"
-INSTITUTION = "Kraken"
 ACCOUNT_NAME = "Kraken"
 PAYEE = "Kraken"
 MAX_TRADES = 20_000
@@ -38,7 +37,8 @@ def account(ccy: str, balance: Decimal, cash: list[Cash]) -> dict:
         "type": "investment",
         "balance": number(balance),
         "currency": ccy,
-        "institution_name": INSTITUTION,
+        # No institution_name: Securo then displays the institution's name
+        # instead of the account's own, and every currency reads "Kraken".
         "institution_logo": LOGO,
         "transactions": [
             {

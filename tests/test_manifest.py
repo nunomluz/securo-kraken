@@ -16,7 +16,10 @@ def test_manifest_matches_code():
     assert {n["host"] for n in m["network"]} == {client.HOST} == {"api.kraken.com"}
     assert m["runtime"]["entrypoint"] == "securo_kraken.plugin:plugin"
     assert re.fullmatch(r"nunomluz/securo-kraken", m["id"])
-    assert m["version"] == "0.1.0" and m["min_securo_version"] == "0.20.0"
+    # Releases bump both files together (AGENTS.md, "Releasing").
+    pyproject = (ROOT / "pyproject.toml").read_text("utf-8")
+    assert re.search(rf'^version = "{re.escape(m["version"])}"$', pyproject, re.M)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", m["version"]) and m["min_securo_version"] == "0.20.0"
     assert "api_scopes" not in m
     assert payload.LOGO in m["logos"] and (ROOT / m["logos"][payload.LOGO]).is_file()
 

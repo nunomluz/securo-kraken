@@ -1,7 +1,7 @@
 # Development only. The plugin itself uses the standard library and ships no lockfile.
 [project]
 name = "securo-kraken"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.13"
 dependencies = []
 

@@ -147,9 +147,11 @@ def test_account_fields_and_transactions():
             Cash("kraken:L1:fee", "EUR", date(2026, 1, 2), D("0.25"), "debit", "Kraken fee"),
             Cash("kraken:L1", "EUR", date(2026, 1, 2), D("1000.5"), "credit", "Deposit")]
     record = payload.account("EUR", D("1200.10"), cash)
+    # No institution_name: Securo would show the institution's name ("Kraken")
+    # instead of each account's own, so EUR and USD would look identical.
     assert {k: v for k, v in record.items() if k != "transactions"} == {
         "external_id": "kraken:EUR", "name": "Kraken EUR", "type": "investment", "balance": "1200.1",
-        "currency": "EUR", "institution_name": "Kraken", "institution_logo": "kraken",
+        "currency": "EUR", "institution_logo": "kraken",
     }
     assert record["transactions"] == [
         {"external_id": "kraken:L1", "description": "Deposit", "amount": "1000.5", "date": "2026-01-02",
