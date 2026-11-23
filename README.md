@@ -54,7 +54,7 @@ This is meant to show sensible gains, not to produce a tax filing.
 
 ## First sync and long histories
 
-Kraken limits how fast the ledger can be read (about 700 entries fit in one sync's time budget on a starter account), and Securo stops a sync after 60 seconds. A long history is therefore read over several hourly syncs, newest first. Cash activity shows up as it is collected. **Coins and their trades appear once the whole ledger and the prices they need have been read**; until then Securo leaves your assets alone rather than guessing.
+Kraken limits how fast the ledger can be read (about 550–600 entries fit in one sync's time budget on a starter account), and Securo stops a sync after 60 seconds. A long history is therefore read over several hourly syncs, newest first. Cash activity shows up as it is collected. **Coins and their trades appear once the whole ledger and the prices they need have been read**; until then Securo leaves your assets alone rather than guessing.
 
 ## Limits
 
@@ -63,11 +63,13 @@ Kraken limits how fast the ledger can be read (about 700 entries fit in one sync
 - Legacy ETH staking rewards may be counted twice if Kraken types both of their ledger rows as rewards. The balancing trades keep the quantity right either way, but the reward gain could be overstated.
 - Futures, margin and NFTs are not shown as things in Securo. Their effect on your spot balances is recorded (money moved to Futures leaves at average cost, money coming back counts at the market price).
 - Fees paid in Kraken fee credits (KFEE) count as zero.
-- Prices come from Kraken's public market data. When one can't be fetched, the plugin waits for the next sync instead of failing.
+- Prices come from Kraken's public market data. When one can't be fetched, the plugin waits for the next sync instead of failing. When Kraken has no trade after an event (a pair not listed yet, or delisted), the lot takes the first price available later, and keeps it.
+- A balancing trade that is no longer needed can't be deleted from Securo, so it stays as a buy of 0.000001 at no cost: a coin you sold out may show a 0.000001 lot.
+- Very large histories (roughly 150,000 trades or more) don't fit in one reply: Securo caps a plugin's reply at 16 MB.
 
 ## What it can reach
 
-Only `api.kraken.com`, to read your balances and ledger with your key and Kraken's public prices. It calls only `BalanceEx` and `Ledgers` with your key. It has no access to your Securo data: it hands the records back, and Securo writes them. Your key is stored encrypted by Securo and only passed to this plugin. It is never logged.
+Only `api.kraken.com`, to read your balances and ledger with your key and Kraken's public prices. It calls only `BalanceEx` and `Ledgers` with your key. (The probe below also calls `GetApiKeyInfo`, which needs no permission, to show which permissions the key has.) It has no access to your Securo data: it hands the records back, and Securo writes them. Your key is stored encrypted by Securo and only passed to this plugin. It is never logged.
 
 ## Reporting a problem
 
