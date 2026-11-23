@@ -21,7 +21,7 @@ import urllib.request
 from collections.abc import Callable
 from decimal import Decimal
 
-from .errors import NeedsAuth, OutOfTime, RateLimited, Transient
+from .errors import BadRequest, NeedsAuth, OutOfTime, RateLimited, Transient
 
 HOST = "api.kraken.com"
 BUDGET_SECONDS = 40
@@ -36,7 +36,8 @@ COSTS = {"Ledgers": 2.0}
 PUBLIC_GAP = 1.0
 _MAX_CREDENTIAL = 512
 _KEY = re.compile(r"[A-Za-z0-9+/=_-]+")
-_METHOD = re.compile(r"[A-Za-z]{1,40}")
+PRIVATE_METHODS = frozenset({"BalanceEx", "Ledgers"})  # read-only, and nothing else
+PUBLIC_METHODS = frozenset({"Assets", "AssetPairs", "Ticker", "Trades"})
 
 # (method, url, headers, body, timeout seconds) -> (status, body)
 Http = Callable[[str, str, dict[str, str], bytes | None, float], tuple[int, bytes]]
@@ -121,7 +122,7 @@ class Client:
     # -- public API -----------------------------------------------------
 
     def private(self, method: str, params: dict[str, str] | None = None) -> dict:
-        self._check_method(method)
+        _check_method(method, PRIVATE_METHODS)
         self._pace_private(COSTS.get(method, 1.0))
         path = f"/0/private/{method}"
         self._nonce = max(int(self._wall() * 1000), self._nonce + 1)
@@ -137,7 +138,7 @@ class Client:
         return self._handle(status, data, method)
 
     def public(self, method: str, params: dict[str, str] | None = None) -> dict:
-        self._check_method(method)
+        _check_method(method, PUBLIC_METHODS)
         self._pace_public()
         url = f"https://{HOST}/0/public/{method}"
         if params:
@@ -146,11 +147,6 @@ class Client:
         return self._handle(status, data, method)
 
     # -- internals ------------------------------------------------------
-
-    @staticmethod
-    def _check_method(method: str) -> None:
-        if not _METHOD.fullmatch(method):
-            raise Transient("Kraken method name is not valid.")
 
     def _decay(self) -> None:
         now = self._clock()
@@ -213,6 +209,12 @@ class Client:
         return result
 
 
+def _check_method(method: str, allowed: frozenset[str]) -> None:
+    """Only the read methods the plugin needs can be called; anything else is a programming error."""
+    if method not in allowed:
+        raise ValueError("Kraken method is not allowed.")
+
+
 def _map_errors(errors: list[str], method: str) -> Exception:
     text = " | ".join(errors)
     lower = text.lower()
@@ -231,4 +233,6 @@ def _map_errors(errors: list[str], method: str) -> Exception:
     if "EService:" in text or "Temporary lockout" in text:
         return Transient("Kraken is temporarily unavailable. Try again later.")
     category = re.sub(r"[^A-Za-z:]", "", ":".join(errors[0].split(":")[:2]))[:40]
+    if "EQuery:" in text or "EGeneral:Invalid arguments" in text:
+        return BadRequest(f"Kraken returned an error ({category}).")
     return Transient(f"Kraken returned an error ({category}).")

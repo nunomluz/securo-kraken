@@ -441,3 +441,100 @@ def test_fiat_account_listed_after_balance_reaches_zero():
     second = run(kraken, first["state"], wall=WALL + 3600)
     usd = accounts(second)["kraken:USD"]
     assert usd["balance"] == "0" and usd["transactions"] == []
+
+
+def test_reward_is_not_counted_twice_after_an_interrupted_walk_across_a_long_gap():
+    """An incremental walk interrupted after a gap of days resumes down to its floor: rows of
+    the old window are not read again, so a reward is not added to its month twice."""
+    x = T0 + 5 * DAY
+    rows = [ledger_row("LDEP", "RDEP", T0, "deposit", asset="ZEUR", amount="10000"),
+            *buy("LETH", T0 + 100, "XETH", "1.0000000000", "2000.0000", fee="3.0000"),
+            ledger_row("LRWX", "RRWX", x, "staking", asset="ETH.B", amount="0.0100000000"),
+            ledger_row("LDX", "RDX", x + 60, "deposit", asset="ZEUR", amount="7.0000")]
+    kraken = base_kraken(rows=rows, balances={"ZEUR": "8004", "XETH": "1", "ETH.B": "0.01"})
+    results = [run(kraken, wall=x + 600)]
+    gap = [ledger_row(f"LG{i:03d}", f"RG{i:03d}", x + 3 * DAY + 60 * i, "deposit", amount="1") for i in range(800)]
+    kraken.add(*gap)
+    kraken.balances = {"ZEUR": "8804", "XETH": "1", "ETH.B": "0.01"}
+    kraken.limit = {"Ledgers": kraken.count("Ledgers") + 3}
+    results.append(run(kraken, results[-1]["state"], wall=x + 3 * DAY + 900 * 60))
+    assert "holdings" not in results[-1]["data"] and results[-1]["state"]["ledger"]["cursor"] is not None
+    kraken.limit = {}
+    for n in range(6):
+        results.append(run(kraken, results[-1]["state"], wall=x + 3 * DAY + (960 + 60 * n) * 60))
+    rewards = [item for item in results[-1]["state"]["moves"] if item[0].startswith("reward:")]
+    assert [(item[0], D(item[4])) for item in rewards] == [("reward:ETH:2025-10", D("0.01"))]
+    cash = [t["external_id"] for result in results[1:] for t in accounts(result)["kraken:EUR"]["transactions"]]
+    assert "kraken:LDX" not in cash and len(cash) == len(set(cash)) == 800
+    eth = holdings(results[-1])["kraken:ETH"]
+    trades = ledger_of(*results, coin="ETH")
+    assert {t.id: t.quantity for t in trades if "reward" in t.id} == {"kraken:reward:ETH:2025-10": D("0.01")}
+    assert not [t for t in trades if t.id.startswith("kraken:adjust:") and t.quantity > D("0.000001")]
+    assert_reconciles(trades, eth["quantity"])
+
+
+class MovingHistory(FakeKraken):
+    """Historical price that rises by 100 for every day after T0 the lookup is for."""
+
+    def _Trades(self, params):
+        since = float(params["since"])
+        price = str(1000 + int((since - T0) // DAY) * 100)
+        return {params["pair"]: [[price, "1", since + 1, "b", "m", "", 1]], "last": params["since"]}
+
+
+def test_opening_of_a_coin_without_trades_keeps_its_date_and_price():
+    kraken = MovingHistory(balances={"XETH": "1"}, rows=[], ticker=TICKER)
+    results, sent = [], []
+    for day in range(3):
+        clock = Clock()
+        p = Kraken(http=kraken, clock=clock, wall=lambda: WALL + day * DAY, sleep=clock.sleep,
+                   today=lambda: date.fromordinal(TODAY.toordinal() + day))
+        results.append(p.sync({"state": results[-1]["state"] if results else None}, ctx()))
+        eth = holdings(results[-1])["kraken:ETH"]
+        sent.append(eth["trades"])
+        assert eth["purchase_price"] == "4800"  # 2025-11-23 00:00: 38 whole days after T0
+    assert sent[0] == [{"external_id": "kraken:opening:ETH", "kind": "buy", "date": "2025-11-23",
+                        "quantity": "1", "price": "4800", "fee": "0"}]
+    assert sent[1] is None and sent[2] is None  # nothing changed: nothing resent
+    assert_reconciles(ledger_of(*results, coin="ETH"), "1")
+
+
+class ThinHistory(FakeKraken):
+    """A pair with no trade since the event (yet): Kraken's Trades answers empty."""
+
+    def _Trades(self, params):
+        return {params["pair"]: [], "last": params["since"]}
+
+
+def test_deposit_without_a_historical_price_freezes_the_price_first_used(capsys):
+    event = WALL - 600
+    rows = [ledger_row("LSD", "RSD", event, "deposit", asset="SOL", amount="10")]
+    kraken = ThinHistory(balances={"SOL": "10"}, rows=rows, ticker={"SOLEUR": "150"})
+    first = run(kraken, wall=event + 7200)  # Kraken may still get a trade for that hour: wait
+    assert first["data"] is None and first["state"]["ledger"]["cursor"] is None  # no fiat, holdings wait
+    results = [first]
+    for day, tick in ((1, "160"), (2, "170")):
+        kraken.ticker = {"SOLEUR": tick}
+        log.reset()
+        results.append(run(kraken, results[-1]["state"], wall=event + 7200 + day * DAY))
+        sol = holdings(results[-1])["kraken:SOL"]
+        assert sol["purchase_price"] == "1600" and sol["current_value"] == str(10 * int(tick))
+    assert "price taken after the event" in capsys.readouterr().err
+    assert holdings(results[1])["kraken:SOL"]["trades"] == [
+        {"external_id": "kraken:LSD", "kind": "buy", "date": "2025-11-24",
+         "quantity": "10", "price": "160", "fee": "0"}]
+    assert holdings(results[2])["kraken:SOL"]["trades"] is None
+    assert_reconciles(ledger_of(*results[1:], coin="SOL"), "10")
+
+
+def test_failing_names_and_pairs_use_the_cache_when_there_is_one(capsys):
+    kraken = base_kraken()
+    first = run(kraken)
+    kraken.fail = {"AssetPairs": "EService:Unavailable"}
+    second = run(kraken, first["state"], wall=WALL + 2 * DAY)  # the cache is stale: Kraken is asked
+    assert kraken.count("AssetPairs") > 1
+    assert set(holdings(second)) == {"kraken:BTC", "kraken:ETH"}
+    assert second["state"]["altnames_at"] == first["state"]["altnames_at"]
+    assert "asset names unavailable; cached names used" in capsys.readouterr().err
+    with pytest.raises(Transient):
+        run(base_kraken(fail={"Assets": "EService:Unavailable"}))  # nothing cached: the sync fails

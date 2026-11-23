@@ -26,7 +26,7 @@ def test_no_balancing_when_trades_match():
     trades = [trade("a", date(2026, 1, 1), "buy", "2")]
     extra, prev = balancing("BTC", trades, D("2"), TODAY, {})
     assert extra == []
-    assert prev == {"opening": "0", "adjust": "0", "adjust_date": TODAY.isoformat()}
+    assert prev == {"opening": "0", "adjust": "0", "adjust_date": TODAY.isoformat(), "opening_date": "2025-12-31"}
     assert TOLERANCE == D("0.00001") and FLOOR == D("0.000001")
 
 
@@ -163,3 +163,34 @@ def test_unparseable_previous_date_is_ignored():
     prev = {"opening": "0", "adjust": "1", "adjust_date": "not-a-date"}
     extra, _ = balancing("BTC", trades, D("5"), TODAY, prev)
     assert extra[0].date == TODAY and extra[0].quantity == FLOOR
+
+
+def test_opening_without_trades_keeps_its_first_date():
+    extra, prev = balancing("BTC", [], D("1"), TODAY, {})
+    assert extra[0].date == date(2026, 11, 21) and prev["opening_date"] == "2026-11-21"
+    for later in (date(2026, 11, 23), date(2026, 12, 30)):
+        extra, prev = balancing("BTC", [], D("1"), later, prev)
+        assert extra[0].date == date(2026, 11, 21) and prev["opening_date"] == "2026-11-21"
+
+
+def test_opening_date_kept_while_before_the_first_trade_else_redated():
+    _, prev = balancing("BTC", [], D("1"), TODAY, {})
+    later = [trade("a", date(2026, 11, 25), "buy", "2")]
+    extra, prev2 = balancing("BTC", later, D("3"), date(2026, 11, 26), prev)
+    assert extra[0].date == date(2026, 11, 21) and prev2["opening_date"] == "2026-11-21"
+    earlier = [trade("b", date(2026, 11, 21), "buy", "2")]  # on the kept date: no longer before it
+    extra, prev3 = balancing("BTC", earlier, D("3"), date(2026, 11, 26), prev)
+    assert extra[0].date == date(2026, 11, 20) and prev3["opening_date"] == "2026-11-20"
+    extra, _ = balancing("BTC", earlier, D("3"), TODAY, {"opening": "1", "opening_date": "garbage"})
+    assert extra[0].date == date(2026, 11, 20)
+
+
+def test_balancing_ids_use_the_one_set_of_prefixes_book_orders_by():
+    from securo_kraken import balancing as balancing_module
+    from securo_kraken import book
+
+    assert balancing_module.ADJUST_PREFIX is book.ADJUST_PREFIX == "kraken:adjust:"
+    assert balancing_module.OPENING_PREFIX is book.OPENING_PREFIX == "kraken:opening:"
+    trades = [trade("s", date(2026, 1, 1), "sell", "2"), trade("b", date(2026, 1, 5), "buy", "3")]
+    extra, _ = balancing("BTC", trades, D("1"), TODAY, {})
+    assert [item.id for item in extra] == [book.OPENING_PREFIX + "BTC", book.ADJUST_PREFIX + "BTC"]

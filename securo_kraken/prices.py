@@ -4,10 +4,11 @@ from decimal import Decimal
 
 from . import log
 from .assets import route
-from .errors import OutOfTime, RateLimited, Transient
+from .errors import BadRequest, OutOfTime, RateLimited, Transient
 
 HOUR = 3600
 LATE_SECONDS = 7 * 86400
+RECENT_SECONDS = 86400  # an event this recent may still get its first trade: no "none" yet
 TOKENIZED_SUFFIX = ".T"
 NONE = "none"
 
@@ -34,6 +35,20 @@ def _ticker(client, pair_keys: list[str], extra: dict[str, str] | None = None) -
     return out
 
 
+def _ticker_one_by_one(client, pair_keys: list[str], extra: dict[str, str] | None) -> dict[str, Decimal]:
+    """Kraken refused a batch (one bad pair spoils it): ask pair by pair, skipping refused ones."""
+    out: dict[str, Decimal] = {}
+    for key in pair_keys:
+        try:
+            out.update(_ticker(client, [key], extra))
+        except BadRequest:
+            log.warning("a price pair was refused")
+        except (Transient, RateLimited, OutOfTime):
+            log.warning("current prices unavailable")
+            break
+    return out
+
+
 def current(client, coins: list[str], valuation: str, pairs: dict[str, str]) -> dict[str, Decimal]:
     """Last price of each coin in the valuation currency; unpriceable coins are left out."""
     routes: dict[str, list[tuple[str, bool]]] = {}
@@ -51,6 +66,8 @@ def current(client, coins: list[str], valuation: str, pairs: dict[str, str]) -> 
     for keys, extra in ((plain, None), (tokenized, {"asset_class": "tokenized_asset"})):
         try:
             got = _ticker(client, sorted(keys), extra)
+        except BadRequest:
+            got = _ticker_one_by_one(client, sorted(keys), extra)
         except (Transient, RateLimited, OutOfTime):
             log.warning("current prices unavailable")
             continue
@@ -79,7 +96,12 @@ def _first_trade(trades: list) -> tuple[str, float] | None:
 
 
 class History:
-    """Hourly historical prices, cached as "<pair>:<hour>" -> price string."""
+    """Hourly historical prices, cached as "<pair>:<hour>" -> price string.
+
+    A pair with no trade after the event is cached as "none". The fallback price
+    then used for a coin and hour is kept as "<coin>:<hour>:fallback", so the lot
+    keeps the price it got first instead of following the market.
+    """
 
     def __init__(self, cache: dict[str, str]) -> None:
         self.cache = cache
@@ -92,6 +114,9 @@ class History:
             log.warning("no price route for a coin")
             return self.fallback.get(family)
         hour = int(time // HOUR)
+        frozen = self.cache.get(_fallback_key(family, hour))
+        if frozen is not None:
+            return Decimal(frozen)
         values: list[Decimal] = []
         need: list[tuple[str, str]] = []
         unavailable = False
@@ -109,22 +134,37 @@ class History:
                 self.missing.setdefault(key, (pair, time))
             return None
         if unavailable:
-            return self.fallback.get(family)
+            price = self.fallback.get(family)
+            if price is not None and price > 0:
+                log.warning("price taken after the event")
+                self.cache[_fallback_key(family, hour)] = str(price)
+            return price
         return _legs_product(legs, values)
 
-    def fetch(self, client, valuation: str, pairs: dict[str, str], *, deadline: float) -> None:
-        """Fetch missing (pair, hour) prices until the budget floor `deadline` is reached."""
+    def fetch(self, client, valuation: str, pairs: dict[str, str], *, deadline: float,
+              now: float | None = None) -> None:
+        """Fetch missing (pair, hour) prices until the budget floor `deadline` is reached.
+
+        A pair with no trade yet after an event less than a day before `now` stays missing.
+        """
         for key, (pair, time) in list(self.missing.items()):
             if client.remaining() <= deadline:
                 return
             try:
                 result = client.public("Trades", {"pair": pair, "since": str(int(time)), "count": "1"})
+            except BadRequest:  # this pair only: the others are still asked
+                log.warning("a price pair was refused")
+                self.cache[key] = NONE
+                del self.missing[key]
+                continue
             except (RateLimited, OutOfTime, Transient):
                 log.warning("historical prices unavailable")
                 return
             trades = next((v for k, v in result.items() if k != "last" and isinstance(v, list)), [])
             parsed = _first_trade(trades)
             if parsed is None:
+                if now is not None and now - time < RECENT_SECONDS:
+                    continue  # retried next sync; holdings wait for it
                 self.cache[key] = NONE
             else:
                 price, when = parsed
@@ -132,3 +172,7 @@ class History:
                 if when - time > LATE_SECONDS:
                     log.warning("price taken after the event")
             del self.missing[key]
+
+
+def _fallback_key(family: str, hour: int) -> str:
+    return f"{family}:{hour}:fallback"

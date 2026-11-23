@@ -217,8 +217,9 @@ class _Out:
                 return
         elif len(fiat_out) == 1 and not fiat_in and not coins_out:
             paid = by_family[fiat_out[0]]
-            amount = -sum((row.amount for row in paid), _ZERO)
-            fee = sum((row.fee for row in paid), _ZERO)
+            # Never negative (a rebate, an odd row): Securo refuses a negative fee or price.
+            amount = max(-sum((row.amount for row in paid), _ZERO), _ZERO)
+            fee = max(sum((row.fee for row in paid), _ZERO), _ZERO)
             for fam in coins_in:
                 self.move(leg(fam), "buy", nets[fam], "fixed", fiat=fiat_out[0], fiat_amount=amount,
                           fiat_fee=fee, group=refid if len(coins_in) > 1 else None,
@@ -226,8 +227,8 @@ class _Out:
             return
         elif len(fiat_in) == 1 and not fiat_out and not coins_in:
             received = by_family[fiat_in[0]]
-            amount = sum((row.amount for row in received), _ZERO)
-            fee = sum((row.fee for row in received), _ZERO)
+            amount = max(sum((row.amount for row in received), _ZERO), _ZERO)
+            fee = max(sum((row.fee for row in received), _ZERO), _ZERO)
             for fam in coins_out:
                 self.move(leg(fam), "sell", -nets[fam], "fixed", fiat=fiat_in[0], fiat_amount=amount,
                           fiat_fee=fee, group=refid if len(coins_out) > 1 else None,

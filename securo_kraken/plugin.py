@@ -18,7 +18,7 @@ from decimal import Decimal
 from . import assets, book, classify, ledger, log, payload, prices
 from .balancing import balancing
 from .client import Client, Http, urllib_http
-from .errors import NeedsAuth, OutOfTime, RateLimited
+from .errors import NeedsAuth, OutOfTime, RateLimited, Transient
 from .numbers import number, parse_decimal, q6
 
 VERSION = 1
@@ -120,8 +120,9 @@ class Kraken:
     def _refresh(self, client: Client, state: dict, codes: list[str]) -> bool | None:
         """Refresh names and pairs when a day old or a code shows up that isn't known.
 
-        True: refreshed now; False: the cache is used; None: nothing is known and Kraken
-        couldn't be asked within the budget.
+        True: refreshed now; False: the cache is used (also when Kraken fails to answer);
+        None: nothing is known and Kraken couldn't be asked within the budget. A failure
+        with nothing cached escapes.
         """
         altnames = state.get("altnames")
         stale = altnames is None or self._wall() - state.get("altnames_at", 0) >= CACHE_SECONDS
@@ -135,6 +136,11 @@ class Kraken:
             pairs = assets.index_pairs(client.public("AssetPairs"), fresh)
         except (RateLimited, OutOfTime):
             return False if altnames is not None else None
+        except Transient:
+            if altnames is None:
+                raise
+            log.warning("asset names unavailable; cached names used")
+            return False
         now = self._wall()
         state.update(altnames=fresh, altnames_at=now, pairs=pairs, pairs_at=now)
         state["unknown"] = sorted(code for code in set(codes) | unknown if code and not _known(code, fresh))
@@ -164,7 +170,7 @@ class Kraken:
         history.fallback = _fallback(families, {}, last)
         book.resolve(trades, valuation, history, pairs)
         if history.missing:
-            history.fetch(client, valuation, pairs, deadline=TICKER_RESERVE)
+            history.fetch(client, valuation, pairs, deadline=TICKER_RESERVE, now=self._wall())
         held = [coin for coin in coins if totals.get(coin, _ZERO) > 0]
         current = prices.current(client, held + fiats, valuation, pairs)
         last.update((family, str(price)) for family, price in current.items())

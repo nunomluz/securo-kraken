@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 from securo_kraken.client import BUDGET_SECONDS, Client, sign
+from securo_kraken import errors
 from securo_kraken.errors import NeedsAuth, OutOfTime, RateLimited, Transient
 from tests.factories import API_KEY, API_SECRET, FakeHttp, err, ok
 
@@ -254,4 +255,31 @@ def test_no_request_when_one_second_or_less_remains():
     clock.now += 4
     with pytest.raises(OutOfTime):
         client.private("BalanceEx")
+    assert http.calls == []
+
+
+@pytest.mark.parametrize("message", ["EQuery:Unknown asset pair", "EGeneral:Invalid arguments:pair"])
+def test_bad_query_is_a_distinct_transient(message):
+    client, _, _ = make({"/0/public/Ticker": [err(message)]})
+    with pytest.raises(errors.BadRequest) as exc:
+        client.public("Ticker", {"pair": "XXBTZEUR"})
+    assert isinstance(exc.value, Transient) and "XXBTZEUR" not in str(exc.value)
+
+
+@pytest.mark.parametrize("reply", [err("EService:Unavailable"), err("EAPI:Bad request"), (503, b"x")])
+def test_other_failures_are_not_bad_requests(reply):
+    client, _, _ = make({BALANCE: [reply]})
+    with pytest.raises(Transient) as exc:
+        client.private("BalanceEx")
+    assert not isinstance(exc.value, errors.BadRequest)
+
+
+@pytest.mark.parametrize("call, method", [
+    ("private", "AddOrder"), ("private", "Withdraw"), ("private", "Ticker"), ("private", "GetApiKeyInfo"),
+    ("public", "BalanceEx"), ("public", "Time"), ("public", "../private/Withdraw"),
+])
+def test_only_the_read_methods_can_be_called(call, method):
+    client, http, _ = make({})
+    with pytest.raises(ValueError):
+        getattr(client, call)(method)
     assert http.calls == []

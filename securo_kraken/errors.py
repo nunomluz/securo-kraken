@@ -15,6 +15,11 @@ class Transient(Exception):
     """A retryable failure."""
 
 
+class BadRequest(Transient):
+    """Kraken refused the request's arguments (`EQuery:`, `EGeneral:Invalid arguments`), e.g. an
+    unknown pair. Still retryable where it escapes; price lookups skip the one pair instead."""
+
+
 class RateLimited(Exception):
     """Internal signal: the API rate limit was hit. Never escapes sync."""
 

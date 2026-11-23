@@ -81,6 +81,9 @@ def advance(client, lstate: dict, *, stop_after: float = LEDGER_BUDGET) -> tuple
         top = True  # the resumed walk is done; now take a fresh look from the top
 
     limit = None if newest is None else newest - 2 * OVERLAP
+    if limit is not None and floor is not None:
+        # A pending walk still reads down to its floor: its ids must stay or those rows come back as new.
+        limit = min(limit, floor)
     seen = {
         ledger_id: at for ledger_id, at in seen.items()
         if (limit is not None and at >= limit) or (cursor is not None and abs(at - cursor) <= BOUNDARY)

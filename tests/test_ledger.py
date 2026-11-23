@@ -233,3 +233,25 @@ def test_budget_stops_the_walk_before_the_next_call():
     api.now = 100.0
     again, caught_up = advance(api, lstate, stop_after=30.0)
     assert again == [] and not caught_up and len(api.params) == 2
+
+
+def test_interrupted_incremental_walk_after_a_long_gap_does_not_reread_the_old_window():
+    old = make_rows(30, step=100.0)  # all inside the overlap below the newest row
+    api = FakeLedger(old)
+    lstate = {}
+    advance(api, lstate)
+    newest = lstate["newest"]
+    gap = [ledger_row(f"G{i:03d}", f"RG{i}", newest + 3 * 86400 + 60 * i, "deposit", amount="1")
+           for i in range(200)]
+    api.rows = gap + old
+    api.params.clear()
+    api.fail_on = {3}
+    first, caught_up = advance(api, lstate)
+    assert not caught_up and lstate["floor"] == newest - OVERLAP and lstate["cursor"] is not None
+    assert lstate["newest"] - 2 * OVERLAP > newest  # the new window has left the old rows behind
+    api.fail_on = set()
+    second, caught_up = advance(api, lstate)
+    assert caught_up
+    both = ids(first + second)
+    assert len(both) == len(set(both))
+    assert sorted(both) == sorted(i for i, _ in gap)  # nothing from before the gap comes back

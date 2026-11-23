@@ -380,3 +380,20 @@ def test_compact_roundtrip():
         item = json.loads(json.dumps(compact(move)))
         assert isinstance(item, list)
         assert expand(item) == move
+
+
+def test_trade_group_never_carries_a_negative_fee_or_amount():
+    _, buys, _ = run(
+        ledger_row("L1", "R1", T, "trade", asset="ZEUR", amount="-100.0", fee="-0.26"),  # a fee rebate
+        ledger_row("L2", "R1", T, "trade", asset="XXBT", amount="0.002"),
+        ledger_row("L3", "R2", T + 1, "trade", asset="ZEUR", amount="1.0", fee="5.0"),  # net -4, amount +1
+        ledger_row("L4", "R2", T + 1, "trade", asset="XETH", amount="0.01"),
+    )
+    _, sells, _ = run(
+        ledger_row("L5", "R5", T, "trade", asset="XXBT", amount="-0.002"),
+        ledger_row("L6", "R5", T, "trade", asset="ZEUR", amount="100.0", fee="-0.26"),
+        ledger_row("L7", "R7", T + 1, "trade", asset="XETH", amount="-0.01"),
+        ledger_row("L8", "R7", T + 1, "trade", asset="ZEUR", amount="-1.0", fee="-5.0"),  # net +4, amount -1
+    )
+    assert [(m.id, m.fiat_amount, m.fiat_fee) for m in buys + sells] == [
+        ("L2", D("100.0"), D(0)), ("L4", D(0), D("5.0")), ("L5", D("100.0"), D(0)), ("L7", D(0), D(0))]

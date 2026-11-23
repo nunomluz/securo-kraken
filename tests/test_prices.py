@@ -4,8 +4,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from securo_kraken import log, prices
 from securo_kraken.client import Client
-from securo_kraken.errors import OutOfTime, RateLimited, Transient
-from tests.factories import API_KEY, API_SECRET, FakeHttp, ok
+from securo_kraken.errors import BadRequest, OutOfTime, RateLimited, Transient
+from tests.factories import API_KEY, API_SECRET, FakeHttp, err, ok
 
 TICKER = "/0/public/Ticker"
 TRADES = "/0/public/Trades"
@@ -281,3 +281,63 @@ def test_trades_query_uses_since_seconds_and_count_1():
     assert query(http.calls[0]) == {"pair": ["XXBTZEUR"], "since": [str(int(T0 + 0.9))], "count": ["1"]}
     assert http.calls[0][0] == "GET"
     assert history.get("BTC", T0 + 0.9, "EUR", PAIRS) == Decimal("1.5")
+
+
+def test_history_recent_event_without_trades_stays_missing():
+    now = T0 + 86400 - 1  # the event is less than a day old
+    history = prices.History({})
+    history.get("BTC", T0, "EUR", PAIRS)
+    stub = Stub({"XXBTZEUR": {"XXBTZEUR": [], "last": "1"}})
+    history.fetch(stub, "EUR", PAIRS, deadline=0, now=now)
+    assert history.cache == {} and list(history.missing) == [f"XXBTZEUR:{int(T0 // HOUR)}"]
+    history.fetch(stub, "EUR", PAIRS, deadline=0, now=T0 + 86400 + 1)  # a day old: Kraken has nothing
+    assert history.cache == {f"XXBTZEUR:{int(T0 // HOUR)}": "none"} and not history.missing
+
+
+def test_history_fallback_price_is_frozen_once_used(capsys):
+    log.reset()
+    history = prices.History({f"XXBTZEUR:{int(T0 // HOUR)}": "none"})
+    history.fallback = {"BTC": Decimal("42")}
+    assert history.get("BTC", T0, "EUR", PAIRS) == Decimal("42")
+    assert "price taken after the event" in capsys.readouterr().err
+    history.fallback = {"BTC": Decimal("50")}  # the price now has moved: the lot keeps the first one
+    assert history.get("BTC", T0 + 60, "EUR", PAIRS) == Decimal("42")
+    assert prices.History(json.loads(json.dumps(history.cache))).get("BTC", T0, "EUR", PAIRS) == Decimal("42")
+
+
+def test_history_zero_fallback_is_not_frozen():
+    history = prices.History({f"XXBTZEUR:{int(T0 // HOUR)}": "none"})
+    history.fallback = {"BTC": Decimal(0)}
+    assert history.get("BTC", T0, "EUR", PAIRS) == 0
+    history.fallback = {"BTC": Decimal("50")}
+    assert history.get("BTC", T0, "EUR", PAIRS) == Decimal("50")
+
+
+def test_history_bad_pair_is_none_and_the_others_are_still_fetched(capsys):
+    log.reset()
+    history = prices.History({})
+    history.get("ADA", T0, "EUR", PAIRS)  # ADAUSD, then EUR/USD
+    history.get("BTC", T0, "EUR", PAIRS)
+
+    class OneBad(Stub):
+        def public(self, method, params=None):
+            if params["pair"] == "ADAUSD":
+                self.calls.append((method, dict(params)))
+                raise BadRequest("refused")
+            return super().public(method, params)
+
+    stub = OneBad({"ZEURZUSD": {"ZEURZUSD": [trade("4", T0)], "last": "1"},
+                   "XXBTZEUR": {"XXBTZEUR": [trade("9", T0)], "last": "1"}})
+    history.fetch(stub, "EUR", PAIRS, deadline=0)
+    hour = int(T0 // HOUR)
+    assert history.cache == {f"ADAUSD:{hour}": "none", f"ZEURZUSD:{hour}": "4", f"XXBTZEUR:{hour}": "9"}
+    assert not history.missing
+    assert "historical prices unavailable" not in capsys.readouterr().err
+
+
+def test_current_retries_pairs_one_by_one_when_the_batch_is_refused():
+    client, http = make({TICKER: [err("EQuery:Unknown asset pair"), err("EQuery:Unknown asset pair"),
+                                  ok({"XXBTZEUR": ticker("10")})]})
+    out = prices.current(client, ["BTC", "ETH"], "EUR", PAIRS)
+    assert out == {"BTC": Decimal("10")}
+    assert [query(call)["pair"] for call in http.calls] == [["XETHZEUR,XXBTZEUR"], ["XETHZEUR"], ["XXBTZEUR"]]

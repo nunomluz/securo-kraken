@@ -20,6 +20,8 @@ from .numbers import q6
 from .prices import History
 
 MICRO = Decimal("0.01")
+# Balancing trade ids (frozen formats; balancing.py builds them from these).
+OPENING_PREFIX = "kraken:opening:"
 ADJUST_PREFIX = "kraken:adjust:"
 _DAY_SECONDS = 86400
 _ZERO = Decimal(0)
