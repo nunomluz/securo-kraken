@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from securo_kraken import log, prices
 from securo_kraken.client import Client
-from securo_kraken.errors import OutOfTime, RateLimited
+from securo_kraken.errors import OutOfTime, RateLimited, Transient
 from tests.factories import API_KEY, API_SECRET, FakeHttp, ok
 
 TICKER = "/0/public/Ticker"
@@ -99,15 +99,70 @@ def test_current_skips_coin_with_no_answer():
     assert prices.current(client, ["BTC"], "EUR", PAIRS) == {}
 
 
-def test_current_tokenized_uses_second_call_with_asset_class():
+def test_current_tokenized_call_carries_only_tokenized_pairs():
     client, http = make({TICKER: [
-        ok({"XXBTZEUR": ticker("10")}),
-        ok({"AAPLXUSD": ticker("200"), "ZEURZUSD": ticker("2")}),
+        ok({"XXBTZEUR": ticker("10"), "ZEURZUSD": ticker("2")}),
+        ok({"AAPLXUSD": ticker("200")}),
     ]})
     out = prices.current(client, ["BTC", "AAPLx.T"], "EUR", {**PAIRS, "AAPLx.T/USD": "AAPLXUSD"})
     assert out == {"BTC": Decimal("10"), "AAPLx.T": Decimal("100")}
     assert "asset_class" not in query(http.calls[0])
+    assert sorted(query(http.calls[0])["pair"][0].split(",")) == ["XXBTZEUR", "ZEURZUSD"]
     assert query(http.calls[1])["asset_class"] == ["tokenized_asset"]
+    assert query(http.calls[1])["pair"] == ["AAPLXUSD"]
+
+
+def test_current_tokenized_reply_never_overwrites_plain_prices():
+    client, _ = make({TICKER: [
+        ok({"XXBTZEUR": ticker("10")}),
+        ok({"AAPLXUSD": ticker("200"), "XXBTZEUR": ticker("999")}),
+    ]})
+    out = prices.current(client, ["BTC", "AAPLx.T"], "USD", {"BTC/EUR": "XXBTZEUR", "AAPLx.T/USD": "AAPLXUSD",
+                                                             "EUR/USD": "ZEURZUSD"})
+    assert out["BTC"] != Decimal("999")
+
+
+def test_current_ticker_failure_returns_empty_without_raising(capsys):
+    log.reset()
+    client, _ = make({TICKER: [(500, b"")]})
+    assert prices.current(client, ["BTC"], "EUR", PAIRS) == {}
+    assert "current prices unavailable" in capsys.readouterr().err
+
+
+def test_current_failing_tokenized_call_keeps_plain_prices():
+    client, _ = make({TICKER: [ok({"XXBTZEUR": ticker("10")}), (500, b"")]})
+    out = prices.current(client, ["BTC", "AAPLx.T"], "EUR", {**PAIRS, "AAPLx.T/EUR": "AAPLXEUR"})
+    assert out == {"BTC": Decimal("10")}
+
+
+def test_history_fetch_stops_on_transient_keeping_cache_and_missing(capsys):
+    log.reset()
+    history = prices.History({})
+    history.get("BTC", T0, "EUR", PAIRS)
+    history.get("BTC", T0 + HOUR, "EUR", PAIRS)
+    history.get("BTC", T0 + 2 * HOUR, "EUR", PAIRS)
+
+    class Flaky(Stub):
+        def public(self, method, params=None):
+            if len(self.calls) == 1:
+                raise Transient("boom")
+            self.calls.append((method, params))
+            return {"XXBTZEUR": [trade("1", T0)], "last": "1"}
+
+    stub = Flaky({})
+    history.fetch(stub, "EUR", PAIRS, deadline=0)
+    assert len(history.cache) == 1
+    assert len(history.missing) == 2
+    assert "historical prices unavailable" in capsys.readouterr().err
+
+
+def test_history_malformed_or_non_positive_first_trade_is_none():
+    for bad in ([["abc", "1", T0]], [["0", "1", T0]], [["-1", "1", T0]], [["5"]], ["x"], [["5", "1", "t"]]):
+        history = prices.History({})
+        history.get("BTC", T0, "EUR", PAIRS)
+        stub = Stub({"XXBTZEUR": {"XXBTZEUR": bad, "last": "1"}})
+        history.fetch(stub, "EUR", PAIRS, deadline=0)
+        assert history.cache == {f"XXBTZEUR:{int(T0 // HOUR)}": "none"}, bad
 
 
 def test_history_get_records_missing_then_fetch_fills_cache():

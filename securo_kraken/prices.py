@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from . import log
 from .assets import route
-from .errors import OutOfTime, RateLimited
+from .errors import OutOfTime, RateLimited, Transient
 
 HOUR = 3600
 LATE_SECONDS = 7 * 86400
@@ -43,11 +43,19 @@ def current(client, coins: list[str], valuation: str, pairs: dict[str, str]) -> 
             log.warning("no price route for a coin")
             continue
         routes[coin] = legs
-    plain = sorted({p for coin, legs in routes.items() if not coin.endswith(TOKENIZED_SUFFIX) for p, _ in legs})
-    tokenized = sorted({p for coin, legs in routes.items() if coin.endswith(TOKENIZED_SUFFIX) for p, _ in legs})
-    last = _ticker(client, plain)
-    if tokenized:
-        last.update(_ticker(client, tokenized, {"asset_class": "tokenized_asset"}))
+    tokenized = {legs[0][0] for coin, legs in routes.items() if coin.endswith(TOKENIZED_SUFFIX) and legs}
+    plain = {p for coin, legs in routes.items() for i, (p, _) in enumerate(legs)
+             if not (i == 0 and coin.endswith(TOKENIZED_SUFFIX))}
+    tokenized -= plain
+    last: dict[str, Decimal] = {}
+    for keys, extra in ((plain, None), (tokenized, {"asset_class": "tokenized_asset"})):
+        try:
+            got = _ticker(client, sorted(keys), extra)
+        except (Transient, RateLimited, OutOfTime):
+            log.warning("current prices unavailable")
+            continue
+        for key, price in got.items():
+            last.setdefault(key, price)
     out: dict[str, Decimal] = {}
     for coin, legs in routes.items():
         if any(p not in last for p, _ in legs):
@@ -55,6 +63,19 @@ def current(client, coins: list[str], valuation: str, pairs: dict[str, str]) -> 
             continue
         out[coin] = _legs_product(legs, [last[p] for p, _ in legs])
     return out
+
+
+def _first_trade(trades: list) -> tuple[str, float] | None:
+    """(price string, trade time) of a usable first trade, else None."""
+    try:
+        first = trades[0]
+        price = Decimal(str(first[0]))
+        when = float(first[2])
+    except (IndexError, KeyError, TypeError, ValueError, ArithmeticError):
+        return None
+    if not price.is_finite() or price <= 0:
+        return None
+    return str(first[0]), when
 
 
 class History:
@@ -98,14 +119,16 @@ class History:
                 return
             try:
                 result = client.public("Trades", {"pair": pair, "since": str(int(time)), "count": "1"})
-            except (RateLimited, OutOfTime):
+            except (RateLimited, OutOfTime, Transient):
+                log.warning("historical prices unavailable")
                 return
             trades = next((v for k, v in result.items() if k != "last" and isinstance(v, list)), [])
-            if not trades:
+            parsed = _first_trade(trades)
+            if parsed is None:
                 self.cache[key] = NONE
             else:
-                first = trades[0]
-                self.cache[key] = str(first[0])
-                if float(first[2]) - time > LATE_SECONDS:
+                price, when = parsed
+                self.cache[key] = price
+                if when - time > LATE_SECONDS:
                     log.warning("price taken after the event")
             del self.missing[key]
