@@ -115,11 +115,10 @@ def test_current_tokenized_call_carries_only_tokenized_pairs():
 def test_current_tokenized_reply_never_overwrites_plain_prices():
     client, _ = make({TICKER: [
         ok({"XXBTZEUR": ticker("10")}),
-        ok({"AAPLXUSD": ticker("200"), "XXBTZEUR": ticker("999")}),
+        ok({"AAPLXEUR": ticker("200"), "XXBTZEUR": ticker("999")}),
     ]})
-    out = prices.current(client, ["BTC", "AAPLx.T"], "USD", {"BTC/EUR": "XXBTZEUR", "AAPLx.T/USD": "AAPLXUSD",
-                                                             "EUR/USD": "ZEURZUSD"})
-    assert out["BTC"] != Decimal("999")
+    out = prices.current(client, ["BTC", "AAPLx.T"], "EUR", {**PAIRS, "AAPLx.T/EUR": "AAPLXEUR"})
+    assert out["BTC"] == Decimal("10")
 
 
 def test_current_ticker_failure_returns_empty_without_raising(capsys):
