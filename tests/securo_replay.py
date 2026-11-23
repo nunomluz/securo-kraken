@@ -5,10 +5,10 @@ Securo stores reported trades in (`_reconciled_trades` in
 app/services/connection_service.py re-stamps them by
 `(date, kind != "buy", external_id)`), and `_reconciled_trades`' acceptance
 check. Quantity and price are stored at 6 decimals, so both are replayed as
-`q6` values; `fee` is used as given.
+`q6` values; the fee is stored at 2 decimals (Numeric(15, 2)), rounded half up.
 """
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from securo_kraken.numbers import q6
 
@@ -25,7 +25,7 @@ def replay(trades) -> dict:
     for trade in sorted(trades, key=_order):
         q = q6(trade.quantity)
         p = q6(trade.price)
-        fee = trade.fee
+        fee = trade.fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         if trade.kind == "buy":
             cost += q * p + fee
             qty += q

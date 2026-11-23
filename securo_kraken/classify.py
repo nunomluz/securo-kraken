@@ -221,7 +221,8 @@ class _Out:
             fee = sum((row.fee for row in paid), _ZERO)
             for fam in coins_in:
                 self.move(leg(fam), "buy", nets[fam], "fixed", fiat=fiat_out[0], fiat_amount=amount,
-                          fiat_fee=fee, weight_market=len(coins_in) > 1)
+                          fiat_fee=fee, group=refid if len(coins_in) > 1 else None,
+                          weight_market=len(coins_in) > 1)
             return
         elif len(fiat_in) == 1 and not fiat_out and not coins_in:
             received = by_family[fiat_in[0]]
@@ -229,7 +230,8 @@ class _Out:
             fee = sum((row.fee for row in received), _ZERO)
             for fam in coins_out:
                 self.move(leg(fam), "sell", -nets[fam], "fixed", fiat=fiat_in[0], fiat_amount=amount,
-                          fiat_fee=fee, weight_market=len(coins_out) > 1)
+                          fiat_fee=fee, group=refid if len(coins_out) > 1 else None,
+                          weight_market=len(coins_out) > 1)
             return
         elif coins_out and coins_in and not fiat_out and not fiat_in:
             for fam in coins_out:

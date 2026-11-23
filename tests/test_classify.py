@@ -114,18 +114,18 @@ def test_several_coins_in_are_split_by_market_value():
     )
     assert moves == [
         Move(id="L2", coin="BTC", time=T, kind="buy", quantity=D("0.0001"), pricing="fixed",
-             fiat="EUR", fiat_amount=D("30"), fiat_fee=D("0.1"), weight_market=True),
+             fiat="EUR", fiat_amount=D("30"), fiat_fee=D("0.1"), group="R1", weight_market=True),
         Move(id="L3", coin="ETH", time=T, kind="buy", quantity=D("0.002"), pricing="fixed",
-             fiat="EUR", fiat_amount=D("30"), fiat_fee=D("0.1"), weight_market=True),
+             fiat="EUR", fiat_amount=D("30"), fiat_fee=D("0.1"), group="R1", weight_market=True),
         Move(id="L4", coin="ADA", time=T + 5, kind="sell", quantity=D("4"), pricing="avg", group="R2"),
         Move(id="L5", coin="DOT", time=T + 5, kind="buy", quantity=D("1"), pricing="carry", group="R2",
              weight_market=True),
         Move(id="L6", coin="ETH", time=T + 5, kind="buy", quantity=D("0.0005"), pricing="carry", group="R2",
              weight_market=True),
         Move(id="L7", coin="ADA", time=T + 9, kind="sell", quantity=D("2"), pricing="fixed",
-             fiat="EUR", fiat_amount=D("12"), fiat_fee=D("0.03"), weight_market=True),
+             fiat="EUR", fiat_amount=D("12"), fiat_fee=D("0.03"), group="R3", weight_market=True),
         Move(id="L8", coin="DOT", time=T + 9, kind="sell", quantity=D("1"), pricing="fixed",
-             fiat="EUR", fiat_amount=D("12"), fiat_fee=D("0.03"), weight_market=True),
+             fiat="EUR", fiat_amount=D("12"), fiat_fee=D("0.03"), group="R3", weight_market=True),
     ]
 
 

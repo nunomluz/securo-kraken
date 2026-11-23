@@ -247,14 +247,101 @@ def test_carry_split_by_market_value_for_dust_sweep():
     assert replay(trades["SOL"])["realized"] == 0
 
 
-def _priced(price):
+def test_fixed_split_legs_at_different_times_share_one_payment():
+    at = DAY0 + 9 * HOUR
+    hist = history(("XXBTZEUR", at, "30000"), ("XETHZEUR", at, "1500"))
+    trades, unresolved = book([
+        fiat_buy("L1", "BTC", at, "0.01", "300", fee="3", group="R5", weight_market=True),
+        fiat_buy("L2", "ETH", at + 1, "0.1", "300", fee="3", group="R5", weight_market=True),
+    ], hist)
+
+    assert unresolved == set()
+    btc, eth = trades["BTC"][0], trades["ETH"][0]
+    assert btc.quantity * btc.price + eth.quantity * eth.price == D("300")
+    assert btc.fee + eth.fee == D("3")
+
+
+def test_same_day_full_cycle_conserves_carried_cost(capsys):
+    # All ETH -> SOL and all SOL -> ETH on one day: the averages depend on each other.
+    trades, unresolved = book([
+        fiat_buy("L1", "ETH", DAY0, "2", "100"),
+        fiat_buy("L2", "SOL", DAY0, "10", "300"),
+        sell("L3", "ETH", DAY1 + HOUR, "2", "avg", group="R1"),
+        buy("L4", "SOL", DAY1 + HOUR, "10", "carry", group="R1"),
+        sell("L5", "SOL", DAY1 + 2 * HOUR, "20", "avg", group="R2"),
+        buy("L6", "ETH", DAY1 + 2 * HOUR, "2", "carry", group="R2"),
+    ])
+
+    assert unresolved == set()
+    # ETH: 4 units for 100 + 2 x carry; SOL: 20 units for 300 + 10 x carry -> 200 and 35.
+    assert [by_id(trades, coin, ledger_id).price for coin, ledger_id in
+            (("ETH", "L3"), ("SOL", "L4"), ("SOL", "L5"), ("ETH", "L6"))] == [D("200"), D("40"), D("35"), D("350")]
+    eth, sol = replay(trades["ETH"]), replay(trades["SOL"])
+    assert eth["units"] == D("2")
+    assert abs(eth["cost"] - D("400")) <= D("0.000001") * eth["units"]
+    assert sol["units"] == 0
+    for result, sold in ((eth, D("2")), (sol, D("20"))):
+        assert abs(result["realized"]) <= D("0.0000005") * sold
+    assert capsys.readouterr().err == ""
+
+
+def test_converted_fee_rounded_to_cents_like_securo():
+    hist = history(("ZEURZUSD", DAY0, "1.25"))
+    trades, unresolved = book([
+        fiat_buy("L1", "BTC", DAY0, "1", "500", fee="2.01", fiat="USD"),
+        sell("L2", "BTC", DAY1, "1", "avg"),
+    ], hist)
+
+    assert unresolved == set()
+    assert by_id(trades, "BTC", "L1").fee == D("1.61")  # 2.01 USD = 1.608 EUR
+    assert by_id(trades, "BTC", "L2").price == D("401.61")
+    assert replay(trades["BTC"])["realized"] == 0
+
+
+def test_swap_across_midnight_dated_by_its_first_leg():
+    received = DAY1 + DAY - 0.5  # 2023-11-15 23:59:59.5 UTC
+    trades, unresolved = book([
+        fiat_buy("L1", "ETH", DAY0, "2", "100"),
+        sell("L3", "ETH", received + 1, "2", "avg", group="R1"),
+        buy("L4", "BTC", received, "0.5", "carry", group="R1"),
+    ])
+
+    assert unresolved == set()
+    spent, got = by_id(trades, "ETH", "L3"), by_id(trades, "BTC", "L4")
+    assert (spent.date, spent.time) == (got.date, got.time) == (date(2023, 11, 15), received)
+    assert (spent.price, got.price) == (D("50"), D("200"))
+
+
+def test_non_terminating_average_realizes_within_rounding():
+    trades, unresolved = book([
+        fiat_buy("L1", "BTC", DAY0, "3", "100"),
+        sell("L2", "BTC", DAY1, "1", "avg"),
+    ])
+
+    assert unresolved == set()
+    assert by_id(trades, "BTC", "L2").price == D("33.333333")
+    assert abs(replay(trades["BTC"])["realized"]) <= D("0.0000005")
+
+
+def _priced(price, pricing="market"):
     return Trade(id="kraken:L1", coin="SHIB", date=date(2023, 11, 14), kind="buy", quantity=D("1000"),
-                 price=price, fee=D("0"), pricing="market", group=None, time=DAY0)
+                 price=price, fee=D("0"), pricing=pricing, group=None, time=DAY0)
 
 
 def test_value_only_below_one_cent():
     assert MICRO == D("0.01")
     assert value_only([_priced(D("0.005"))], D("1"))
     assert value_only([_priced(D("1"))], D("0.009"))
-    assert not value_only([_priced(D("0")), _priced(D("0.01"))], D("0.01"))
+    assert not value_only([_priced(D("0"), "zero"), _priced(D("0.01"))], D("0.01"))
     assert not value_only([_priced(None)], None)
+
+
+def test_value_only_when_market_price_rounds_to_zero():
+    assert value_only([_priced(D("0"))], D("1"))
+    assert value_only([_priced(D("0"), "fixed")], D("1"))
+
+
+def test_value_only_ignores_zero_current_price_and_zero_cost_basis():
+    assert not value_only([_priced(D("1"))], D("0"))
+    # Rewards swapped or withdrawn carry a cost of exactly 0: no precision is lost.
+    assert not value_only([_priced(D("0"), "avg"), _priced(D("0"), "carry")], D("1"))
