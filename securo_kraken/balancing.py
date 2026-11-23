@@ -20,31 +20,46 @@ _ZERO = Decimal(0)
 def balancing(coin: str, trades: list[Trade], target: Decimal, today: date,
               prev: dict) -> tuple[list[Trade], dict]:
     """The balancing trades to add for `coin` and the state to remember for the next sync."""
-    position = low = _ZERO
-    for item in sorted(trades, key=lambda t: (t.date, t.kind != "buy", t.id)):
-        quantity = q6(item.quantity)
-        position += quantity if item.kind == "buy" else -quantity
-        low = min(low, position)
+    position = sum((q6(t.quantity) if t.kind == "buy" else -q6(t.quantity) for t in trades), _ZERO)
+    low = _lowest(trades)
     dip = max(_ZERO, -low)
     opening = dip + max(_ZERO, target - (position + dip))
-    adjust = max(_ZERO, position + opening - target)
     opening = _ZERO if opening <= TOLERANCE else opening
+    adjust = max(_ZERO, position + opening - target)
     adjust = _ZERO if adjust <= TOLERANCE else adjust
 
     before_opening = _before(prev, "opening")
     before_adjust = _before(prev, "adjust")
     opening_date = (min(item.date for item in trades) if trades else today) - timedelta(days=1)
+    opening_trade = _make("opening", coin, "buy", "market", opening, opening_date)
     kept_date = _date(prev.get("adjust_date"))
-    keeps = kept_date is not None and before_adjust == adjust
-    adjust_date = kept_date if keeps else today
+    adjust_date = today
+    if kept_date is not None and before_adjust == adjust:
+        # Keep the earlier date only if the ledger still never drops below zero with the sell there;
+        # today is always safe (it sorts after that day's buys).
+        candidate = _make("adjust", coin, "sell", "avg", adjust or FLOOR, kept_date)
+        if _lowest([*trades, opening_trade, candidate]) >= -TOLERANCE:
+            adjust_date = kept_date
 
     out: list[Trade] = []
     if opening > 0 or before_opening != 0:
         out.append(_make("opening", coin, "buy", "market", opening or FLOOR, opening_date))
     if adjust > 0 or before_adjust != 0:
-        out.append(_make("adjust", coin, "sell", "avg", adjust or FLOOR, adjust_date if adjust else kept_date or today))
+        # A floor adjust (no longer needed) goes under its old date; state["adjust_date"] only
+        # follows a live adjust, so a later need is dated afresh.
+        day = adjust_date if adjust else kept_date or today
+        out.append(_make("adjust", coin, "sell", "avg", adjust or FLOOR, day))
     state = {"opening": number(opening), "adjust": number(adjust), "adjust_date": adjust_date.isoformat()}
     return out, state
+
+
+def _lowest(trades: list[Trade]) -> Decimal:
+    position = low = _ZERO
+    for item in sorted(trades, key=lambda t: (t.date, t.kind != "buy", t.id)):
+        quantity = q6(item.quantity)
+        position += quantity if item.kind == "buy" else -quantity
+        low = min(low, position)
+    return low
 
 
 def _make(name: str, coin: str, kind: str, pricing: str, quantity: Decimal, day: date) -> Trade:

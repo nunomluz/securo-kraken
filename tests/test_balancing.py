@@ -122,3 +122,44 @@ def test_sold_out_coin_reconciles_to_zero():
     extra, _ = balancing("BTC", trades, D("0"), TODAY, {})
     assert [(i.id, i.quantity) for i in extra] == [("kraken:adjust:BTC", D("2"))]
     assert securo_replay.reconciles(trades + priced(extra), D("0"))
+
+
+def test_kept_date_is_dropped_when_it_would_overdraw():
+    trades = [trade("a", date(2026, 1, 1), "buy", "5"), trade("b", date(2026, 11, 10), "sell", "5"),
+              trade("c", date(2026, 11, 15), "buy", "1")]
+    prev = {"opening": "0", "adjust": "1", "adjust_date": "2026-11-01"}
+    extra, state = balancing("BTC", trades, D("0"), TODAY, prev)
+    assert [(i.id, i.quantity, i.date) for i in extra] == [("kraken:adjust:BTC", D("1"), TODAY)]
+    assert state["adjust_date"] == TODAY.isoformat()
+    assert securo_replay.reconciles(trades + priced(extra), D("0"))
+
+
+def test_kept_date_stays_when_the_ledger_still_replays():
+    trades = [trade("a", date(2026, 1, 1), "buy", "5"), trade("b", date(2026, 11, 10), "buy", "1")]
+    prev = {"opening": "0", "adjust": "1", "adjust_date": "2026-11-01"}
+    extra, state = balancing("BTC", trades, D("5"), TODAY, prev)
+    assert extra[0].date == date(2026, 11, 1) and state["adjust_date"] == "2026-11-01"
+
+
+def test_trades_dated_today():
+    trades = [trade("a", date(2026, 1, 1), "buy", "5"), trade("b", TODAY, "sell", "5"), trade("c", TODAY, "buy", "1")]
+    extra, _ = balancing("BTC", trades, D("0"), TODAY, {})
+    assert [(i.id, i.quantity, i.date) for i in extra] == [("kraken:adjust:BTC", D("1"), TODAY)]
+    assert securo_replay.reconciles(trades + priced(extra), D("0"))
+
+
+def test_adjust_is_sized_from_the_zeroed_opening():
+    trades = [trade("s", date(2026, 1, 1), "sell", "0.000005"), trade("b", date(2026, 1, 5), "buy", "1")]
+    extra, state = balancing("BTC", trades, D("0.999987"), TODAY, {})
+    assert extra == []
+    assert state["opening"] == "0" and state["adjust"] == "0"
+
+
+def test_unparseable_previous_date_is_ignored():
+    trades = [trade("a", date(2026, 1, 1), "buy", "5")]
+    prev = {"opening": "0", "adjust": "1", "adjust_date": "not-a-date"}
+    extra, state = balancing("BTC", trades, D("4"), TODAY, prev)
+    assert extra[0].date == TODAY and state["adjust_date"] == TODAY.isoformat()
+    prev = {"opening": "0", "adjust": "1", "adjust_date": "not-a-date"}
+    extra, _ = balancing("BTC", trades, D("5"), TODAY, prev)
+    assert extra[0].date == TODAY and extra[0].quantity == FLOOR
