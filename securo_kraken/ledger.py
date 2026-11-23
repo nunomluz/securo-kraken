@@ -8,11 +8,14 @@ Walk state lives in ``lstate`` (JSON-safe). It is only updated when ``advance``
 returns, so an unexpected error leaves it exactly as it was.
 """
 
+from . import log
 from .client import LEDGER_BUDGET
 from .errors import OutOfTime, RateLimited
 
 OVERLAP = 3600  # seconds a fresh top walk reaches back below the newest row
 BOUNDARY = 1.0  # ids this close to the cursor are kept for the resumed page
+PAGE = 50  # rows Kraken returns per Ledgers page
+STALL_STEP = 0.0001  # how far the cursor steps past a page of tied rows
 
 
 def advance(client, lstate: dict, *, stop_after: float = LEDGER_BUDGET) -> tuple[list[dict], bool]:
@@ -21,9 +24,7 @@ def advance(client, lstate: dict, *, stop_after: float = LEDGER_BUDGET) -> tuple
     cursor = lstate.get("cursor")
     floor = lstate.get("floor")
     newest = lstate.get("newest")
-    seen = dict(lstate.get("seen_at") or {})
-    for ledger_id in lstate.get("seen") or ():
-        seen.setdefault(ledger_id, newest if newest is not None else 0.0)
+    seen = dict(lstate.get("seen_at") or {})  # id -> time
 
     rows: list[dict] = []
     top = cursor is None  # this walk started from the top within this call
@@ -50,17 +51,23 @@ def advance(client, lstate: dict, *, stop_after: float = LEDGER_BUDGET) -> tuple
             times.append(at)
             if newest is None or at > newest:
                 newest = at
-            if ledger_id in seen or (phase == "incremental" and at < floor):
+            if ledger_id in seen or (floor is not None and at < floor):
                 continue
             seen[ledger_id] = at
             rows.append({**raw, "id": ledger_id})
             fresh += 1
 
         oldest = min(times) if times else None
+        if fresh == 0 and cursor is not None and len(times) >= PAGE and oldest == max(times) == cursor:
+            # A whole page of already-seen rows sharing the cursor time: more rows share
+            # that time than one page holds, and `ofs` is off limits. Step past them.
+            log.warning("ledger rows sharing one time were skipped")
+            cursor -= STALL_STEP
+            continue
         if phase == "backfill":
             finished = fresh == 0
         else:
-            finished = fresh == 0 or oldest <= floor
+            finished = len(times) < PAGE or oldest <= floor
         if not finished:
             cursor = oldest
             continue
@@ -78,6 +85,6 @@ def advance(client, lstate: dict, *, stop_after: float = LEDGER_BUDGET) -> tuple
         ledger_id: at for ledger_id, at in seen.items()
         if (limit is not None and at >= limit) or (cursor is not None and abs(at - cursor) <= BOUNDARY)
     }
-    lstate.update(phase=phase, cursor=cursor, floor=floor, newest=newest,
-                  seen=list(seen), seen_at=seen)
+    lstate.pop("seen", None)
+    lstate.update(phase=phase, cursor=cursor, floor=floor, newest=newest, seen_at=seen)
     return rows, caught_up
