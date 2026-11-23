@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from securo_kraken import log
-from securo_kraken.book import MICRO, Trade, average_costs, resolve, trades_from_moves, value_only
+from securo_kraken.book import MICRO, Trade, average_costs, exact_costs, resolve, trades_from_moves, value_only
 from securo_kraken.classify import Move
 from securo_kraken.numbers import q6
 from securo_kraken.prices import History
@@ -345,3 +345,32 @@ def test_value_only_ignores_zero_current_price_and_zero_cost_basis():
     assert not value_only([_priced(D("1"))], D("0"))
     # Rewards swapped or withdrawn carry a cost of exactly 0: no precision is lost.
     assert not value_only([_priced(D("0"), "avg"), _priced(D("0"), "carry")], D("1"))
+
+
+def test_exact_costs_unrounded_for_value_only_coins():
+    hist = history(("DOTEUR", DAY1 + 5 * HOUR, "3.123456789"))
+    moves = [
+        fiat_buy("L1", "PEPE", DAY0 + 10 * HOUR, "1000000", "0.33", fee="0.01"),  # 0.00000033 a unit: q6 -> 0
+        fiat_buy("L2", "PEPE", DAY1, "2000000", "0.62"),
+        sell("L3", "PEPE", DAY1 + 2 * HOUR, "1500000", "avg"),  # takes away half the cost: 0.48
+        sell("L4", "PEPE", DAY1 + 3 * HOUR, "500000", "avg", group="G"),  # a third of what is left: 0.16
+        buy("L5", "BTC", DAY1 + 3 * HOUR, "0.0001", "carry", group="G"),
+        buy("L6", "BTC", DAY1 + 4 * HOUR, "0.00001", "zero", reward=True),
+        buy("L7", "DOT", DAY1 + 5 * HOUR, "1", "market"),
+    ]
+    trades, unresolved = book(moves, hist)
+    assert unresolved == set()
+    exact = exact_costs(trades, "EUR", hist, PAIRS)
+    assert exact == {"PEPE": D("0.32"), "BTC": D("0.16"), "DOT": D("3.123456789")}
+    assert average_costs(trades["PEPE"])[1] != D("0.32")  # Securo's 6-decimal prices lose it
+
+
+def test_exact_costs_split_a_payment_by_market_value_and_zero_when_sold_out():
+    hist = history(("XXBTZEUR", DAY0, "30000"), ("XETHZEUR", DAY0, "3000"))
+    moves = [
+        fiat_buy("L1", "BTC", DAY0, "0.01", "600", fee="3", group="R", weight_market=True),
+        fiat_buy("L2", "ETH", DAY0, "0.1", "600", fee="3", group="R", weight_market=True),
+        sell("L3", "ETH", DAY1, "0.1", "avg"),
+    ]
+    trades, _ = book(moves, hist)
+    assert exact_costs(trades, "EUR", hist, PAIRS) == {"BTC": D("301.5"), "ETH": D(0)}

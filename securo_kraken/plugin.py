@@ -7,9 +7,11 @@ then the `holdings` key is left out so Securo archives nothing.
 """
 
 import copy
+import json
 import time
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -23,6 +25,7 @@ VERSION = 1
 DEFAULT_VALUATION = "EUR"
 CACHE_SECONDS = 24 * 3600
 TICKER_RESERVE = 5.0  # seconds the historical price lookups leave for the current prices
+STATE_WARN_BYTES = 10 * 1024 * 1024  # Securo caps state and data together at 16 MB
 _ZERO = Decimal(0)
 _ROW_FIELDS = ("id", "refid", "time", "type", "subtype", "aclass", "asset", "amount", "fee")
 
@@ -102,9 +105,9 @@ class Kraken:
             found = self._holdings(client, state, totals, splits)
             if found is not None:
                 data["holdings"] = found
-        if len(data) == 1:
-            return {"state": state, "data": None}
-        return {"state": state, "data": data}
+        if len(json.dumps(state)) > STATE_WARN_BYTES:
+            log.warning("plugin state is getting large")
+        return {"state": state, "data": data if len(data) > 1 else None}
 
     def _client(self, secrets: dict) -> Client:
         kwargs: dict = {"http": self._http or urllib_http, "wall": self._wall}
@@ -143,7 +146,9 @@ class Kraken:
         valuation, pairs = state["valuation"], state["pairs"]
         coins = state["coins"]
         moves = [classify.expand(item) for item in state.get("moves", [])]
-        trades = book.trades_from_moves(moves)
+        # Trades too small to send (q6 quantity 0) are left out everywhere, so costs match Securo's replay.
+        trades = {coin: [trade for trade in items if q6(trade.quantity) > 0]
+                  for coin, items in book.trades_from_moves(moves).items()}
         today = self._today() if self._today else datetime.fromtimestamp(self._wall(), UTC).date()
         before = state.get("balancing", {})
         sizes: dict[str, dict] = {}
@@ -163,23 +168,32 @@ class Kraken:
         held = [coin for coin in coins if totals.get(coin, _ZERO) > 0]
         current = prices.current(client, held + fiats, valuation, pairs)
         last.update((family, str(price)) for family, price in current.items())
-        history.fallback = _fallback(families, current, last)
+        history.fallback = _Fallback(_fallback(families, current, last))
         history.missing.clear()
         unresolved = book.resolve(trades, valuation, history, pairs)
         if unresolved or history.missing:
             log.warning("some prices are not known yet; holdings wait for a later sync")
             return None
 
+        sent_before = state.get("sent", {})
         sticky = set(state.get("value_only", []))
-        sticky |= {coin for coin in coins if book.value_only(trades[coin], current.get(coin))}
+        for coin in coins:
+            if sent_before.get(coin):
+                sticky.discard(coin)  # a coin whose ledger Securo stores keeps it
+            elif len(trades[coin]) > payload.MAX_TRADES:
+                log.warning("too many trades for one coin; sent its value only")
+                sticky.add(coin)
+            elif book.value_only(trades[coin], current.get(coin)):
+                sticky.add(coin)
         tradable = {coin: trades[coin] for coin in coins
                     if coin not in sticky and not payload.too_large(totals.get(coin, _ZERO))}
-        to_send, sent = payload.diff(tradable, state.get("sent", {}))
+        to_send, sent = payload.diff(tradable, sent_before, today=today)
+        exact = book.exact_costs(trades, valuation, history, pairs)
         records = []
         for coin in coins:
             quantity = max(totals.get(coin, _ZERO), _ZERO)
             price, source = _price(coin, current, last, valuation, pairs) if quantity else (None, None)
-            _, cost = book.average_costs(trades[coin])
+            cost = exact[coin] if coin not in tradable else book.average_costs(trades[coin])[1]
             records.append(payload.holding(
                 coin, valuation=valuation, quantity=quantity, value=q6(quantity) * (price or _ZERO), price=price,
                 cost=cost, split=splits.get(coin, {}), trades=to_send.get(coin), value_only=coin in sticky,
@@ -232,7 +246,7 @@ def _price(coin: str, current: dict[str, Decimal], last: dict[str, str], valuati
     if coin in last:
         log.warning("a coin is valued at its last known price")
         return Decimal(last[coin]), "last"
-    log.warning("a coin has no price; its value is 0")
+    log.warning("no price found for a coin; valued at 0")
     return None, "none"
 
 
@@ -241,17 +255,37 @@ def _fallback(families: set[str], current: dict[str, Decimal], last: dict[str, s
     return {fam: current.get(fam) or Decimal(last.get(fam, "0")) for fam in families}
 
 
+class _Fallback(dict):
+    """The fallback prices, saying so whenever a price of 0 is actually used."""
+
+    def get(self, key, default=None):
+        value = super().get(key, default)
+        if value is not None and not value:
+            log.warning("no price found for a coin; valued at 0")
+        return value
+
+
 def _stored_row(row: dict) -> dict:
     """A ledger row as kept in state: the fields classify reads, JSON-safe."""
     return {key: str(row[key]) if isinstance(row.get(key), Decimal) else row.get(key) for key in _ROW_FIELDS}
 
 
 def _add_moves(state: dict, moves: list[classify.Move]) -> None:
+    """Keep new moves; reward buys are summed into one move per coin and UTC month as they arrive."""
     stored = state.setdefault("moves", [])
-    known = {item[0] for item in stored}
+    index = {item[0]: i for i, item in enumerate(stored)}
     for move in moves:
-        if move.id not in known:
-            known.add(move.id)
+        if move.reward and move.kind == "buy":
+            month = datetime.fromtimestamp(move.time, UTC).strftime("%Y-%m")
+            key = f"reward:{move.coin}:{month}"
+            if key in index:
+                old = classify.expand(stored[index[key]])
+                move = replace(old, quantity=old.quantity + move.quantity, time=min(old.time, move.time))
+                stored[index[key]] = classify.compact(move)
+                continue
+            move = replace(move, id=key)
+        if move.id not in index:
+            index[move.id] = len(stored)
             stored.append(classify.compact(move))
 
 

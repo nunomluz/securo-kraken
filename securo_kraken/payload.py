@@ -5,6 +5,8 @@ from scratch each sync; ``diff`` keeps only those Securo hasn't stored yet in
 their current form, within the reply's trade cap.
 """
 
+import hashlib
+from datetime import date
 from decimal import Decimal
 
 from . import log
@@ -21,11 +23,9 @@ PAYEE = "Kraken"
 MAX_TRADES = 20_000
 MAX_TRANSACTIONS = 20_000
 LIMIT = Decimal(10) ** 9  # Securo's units column holds 9 digits before the point
+LARGEST = Decimal("999999999.999999")
 _ZERO = Decimal(0)
 _FLOOR = number(FLOOR)
-
-# A sent trade as kept in state: [external_id, date, kind, quantity, price, fee].
-Sent = list[str]
 
 
 def account(ccy: str, balance: Decimal, cash: list[Cash]) -> dict:
@@ -60,6 +60,9 @@ def holding(coin: str, *, valuation: str, quantity: Decimal, value: Decimal, pri
             tokenized: bool, source: str | None = None) -> dict:
     """One coin. `value_only` (priced below a cent) keeps the quantity and sends no trades."""
     units = q6(quantity)
+    if q6(value) >= LIMIT:
+        log.warning("holding value too large for Securo; capped")
+        value = LARGEST
     metadata: dict[str, str] = dict(split)
     if source:
         metadata["price_source"] = source
@@ -89,27 +92,34 @@ def too_large(quantity: Decimal) -> bool:
     return q6(quantity) >= LIMIT
 
 
-def diff(trades_by_coin: dict[str, list[Trade]], sent: dict[str, list]) -> tuple[dict[str, list[dict] | None], dict]:
+def diff(trades_by_coin: dict[str, list[Trade]], sent: dict[str, list], *,
+         today: date | None = None) -> tuple[dict[str, list[dict] | None], dict]:
     """Per coin, the trades to send (None: nothing) and the new `sent` state.
 
+    `sent` keeps, per coin, [external_id, short digest of (date, kind, quantity, price, fee)].
+
     A trade is sent when it is new or its (date, kind, quantity, price, fee) changed. A trade
-    sent before and no longer produced is resent at the floor quantity. A coin whose changes
-    don't fit in what is left of MAX_TRADES waits whole for a later sync (its `sent` unchanged).
-    Coins not in `trades_by_coin` keep their `sent` entry as it is.
+    sent before and no longer produced is neutralised: resent as a floor-quantity buy at no cost
+    (it can't take the replay below zero), dated the coin's first trade (else `today`). A coin
+    whose changes don't fit in what is left of MAX_TRADES waits whole for a later sync (its
+    `sent` unchanged). Coins not in `trades_by_coin` keep their `sent` entry as it is.
     """
     left = MAX_TRADES
     out: dict[str, list[dict] | None] = {}
     after = dict(sent)
     for coin in sorted(trades_by_coin):
-        before = {item[0]: item for item in sent.get(coin, [])}
-        now: dict[str, Sent] = {}
+        before = {item[0]: item[1] for item in sent.get(coin, [])}
+        now: dict[str, dict] = {}
         for trade in trades_by_coin[coin]:
             if q6(trade.quantity) > 0:  # Securo needs quantity > 0; the balancing trades cover the rest
-                now[trade.id] = _sent(trade)
-        for trade_id, item in before.items():
+                now[trade.id] = _record(trade)
+        first = min((record["date"] for record in now.values()), default=(today or date.today()).isoformat())
+        for trade_id in before:
             if trade_id not in now:
-                now[trade_id] = [trade_id, item[1], item[2], _FLOOR, item[4], item[5]]
-        changes = [item for trade_id, item in now.items() if before.get(trade_id) != item]
+                now[trade_id] = {"external_id": trade_id, "kind": "buy", "date": first, "quantity": _FLOOR,
+                                 "price": "0", "fee": "0"}
+        digests = {trade_id: _digest(record) for trade_id, record in now.items()}
+        changes = [record for trade_id, record in now.items() if before.get(trade_id) != digests[trade_id]]
         if not changes:
             out[coin] = None
             continue
@@ -119,18 +129,18 @@ def diff(trades_by_coin: dict[str, list[Trade]], sent: dict[str, list]) -> tuple
             out[coin] = None
             continue
         left -= len(changes)
-        out[coin] = [_record(item) for item in changes]
-        after[coin] = list(now.values())
+        out[coin] = changes
+        after[coin] = [[trade_id, digest] for trade_id, digest in digests.items()]
     return out, after
 
 
-def _sent(trade: Trade) -> Sent:
+def _record(trade: Trade) -> dict:
     if trade.price is None:
         raise ValueError("a trade has no price")
-    return [trade.id, trade.date.isoformat(), trade.kind, number(q6(trade.quantity)), number(q6(trade.price)),
-            number(trade.fee)]
+    return {"external_id": trade.id, "kind": trade.kind, "date": trade.date.isoformat(),
+            "quantity": number(q6(trade.quantity)), "price": number(q6(trade.price)), "fee": number(trade.fee)}
 
 
-def _record(item: Sent) -> dict:
-    trade_id, day, kind, quantity, price, fee = item
-    return {"external_id": trade_id, "kind": kind, "date": day, "quantity": quantity, "price": price, "fee": fee}
+def _digest(record: dict) -> str:
+    text = "|".join(record[key] for key in ("date", "kind", "quantity", "price", "fee"))
+    return hashlib.blake2b(text.encode(), digest_size=6).hexdigest()

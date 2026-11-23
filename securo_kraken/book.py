@@ -107,6 +107,53 @@ def average_costs(trades: list[Trade]) -> tuple[Decimal, Decimal]:
     return units, cost if units > 0 else _ZERO
 
 
+def exact_costs(trades_by_coin: dict[str, list[Trade]], valuation: str, history: History,
+                pairs: dict[str, str]) -> dict[str, Decimal]:
+    """Each coin's cost of the units held, without Securo's 6-decimal prices (for value-only coins).
+
+    Fixed: fiat paid and its fee at that time's rate; market: quantity x price then; zero: 0;
+    carry: the exact cost its swap's sells took away; any sell takes away its share of the cost.
+    Run after `resolve`, so every price needed is cached. Sells go first at one instant.
+    """
+    everything = sorted((trade for trades in trades_by_coin.values() for trade in trades),
+                        key=lambda trade: (trade.time, trade.kind == "buy", trade.id))
+    pricer = _Pricer(everything, valuation, history, pairs)
+    units: dict[str, Decimal] = defaultdict(Decimal)
+    cost: dict[str, Decimal] = defaultdict(Decimal)
+    removed: dict[int, Decimal] = {}
+    for trade in everything:
+        coin, quantity = trade.coin, trade.quantity
+        if trade.kind == "sell":
+            sold = min(quantity, units[coin])
+            part = cost[coin] * sold / units[coin] if units[coin] > 0 else _ZERO
+            units[coin] -= sold
+            cost[coin] -= part
+            removed[id(trade)] = part
+            continue
+        units[coin] += quantity
+        cost[coin] += _exact(trade, pricer, removed)
+    return {coin: cost[coin] if units[coin] > 0 else _ZERO for coin in trades_by_coin}
+
+
+def _exact(trade: Trade, pricer: "_Pricer", removed: dict[int, Decimal]) -> Decimal:
+    """The exact cost a buy adds; a figure that can't be worked out falls back to the resolved price."""
+    share = pricer._share(trade)
+    if trade.pricing == "zero":
+        return _ZERO
+    if trade.pricing == "fixed":
+        rate = pricer._rate(trade.fiat, trade.time)
+        if rate is not None and share is not None and trade.fiat_amount is not None:
+            return (trade.fiat_amount + trade.fiat_fee) * rate * share[0] / share[1]
+    elif trade.pricing == "market":
+        rate = pricer._rate(trade.coin, trade.time)
+        if rate is not None:
+            return trade.quantity * rate
+    elif trade.pricing == "carry" and share is not None:
+        carried = sum((removed.get(id(source), _ZERO) for source in pricer._sources(trade)), _ZERO)
+        return carried * share[0] / share[1]
+    return trade.quantity * (trade.price or _ZERO) + trade.fee
+
+
 def value_only(trades: list[Trade], current_price: Decimal | None) -> bool:
     """Whether the coin is priced below a cent now or at any trade priced from the market.
 

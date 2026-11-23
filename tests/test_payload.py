@@ -2,11 +2,18 @@ import json
 from datetime import date
 from decimal import Decimal
 
-from securo_kraken import payload
+import pytest
+
+from securo_kraken import log, payload
 from securo_kraken.book import Trade
 from securo_kraken.classify import Cash
 
 D = Decimal
+
+
+@pytest.fixture(autouse=True)
+def fresh_log():
+    log.reset()
 
 
 def trade(id_, kind="buy", quantity="1", price="100", fee="0", day=date(2026, 1, 5), coin="BTC"):
@@ -47,12 +54,22 @@ def test_diff_zero_quantity_trades_are_never_sent():
 
 
 def test_diff_vanished_trade_resent_at_floor():
-    _, sent = payload.diff({"BTC": [trade("kraken:L1"), trade("kraken:L2", "sell", "0.5", "120", "1.5")]}, {})
-    out, sent = payload.diff({"BTC": [trade("kraken:L1")]}, sent)
-    assert out["BTC"] == [{"external_id": "kraken:L2", "kind": "sell", "date": "2026-01-05",
-                           "quantity": "0.000001", "price": "120", "fee": "1.5"}]
-    out, _ = payload.diff({"BTC": [trade("kraken:L1")]}, sent)
+    """A trade no longer produced is neutralised: a floor buy at no cost, which can't go below zero."""
+    first = [trade("kraken:L1", day=date(2026, 1, 3)), trade("kraken:L2", "sell", "0.5", "120", "1.5")]
+    _, sent = payload.diff({"BTC": first}, {})
+    out, sent = payload.diff({"BTC": [trade("kraken:L1", day=date(2026, 1, 3))]}, sent, today=date(2026, 2, 1))
+    assert out["BTC"] == [{"external_id": "kraken:L2", "kind": "buy", "date": "2026-01-03",
+                           "quantity": "0.000001", "price": "0", "fee": "0"}]
+    out, _ = payload.diff({"BTC": [trade("kraken:L1", day=date(2026, 1, 3))]}, sent)
     assert out["BTC"] is None  # already at the floor: not resent again
+    out, _ = payload.diff({"BTC": []}, {"BTC": [["kraken:L9", "x"]]}, today=date(2026, 2, 1))
+    assert out["BTC"][0]["date"] == "2026-02-01"  # nothing left to date it by
+
+
+def test_diff_sent_state_is_compact():
+    _, sent = payload.diff({"BTC": [trade("kraken:L1", quantity="0.12345678", price="61234.56789")]}, {})
+    (entry,) = sent["BTC"]
+    assert entry[0] == "kraken:L1" and len(entry) == 2 and len(entry[1]) <= 12
 
 
 def test_diff_leaves_other_coins_sent_alone():
@@ -113,6 +130,14 @@ def test_holding_value_only_by_size_and_by_price(capsys):
     err = capsys.readouterr().err
     assert err.count("too large") == 1
     assert "1000000000" not in err and "BTC" not in err
+
+
+def test_holding_value_too_large_is_capped(capsys):
+    record = holding(value=D("1234567890.5"))
+    assert record["current_value"] == "999999999.999999"
+    assert holding(value=D("999999999.999999"))["current_value"] == "999999999.999999"
+    err = capsys.readouterr().err
+    assert err.count("holding value too large for Securo; capped") == 1 and "1234" not in err
 
 
 def test_account_fields_and_transactions():

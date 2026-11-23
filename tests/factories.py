@@ -56,12 +56,12 @@ def ledger_page(rows) -> dict:
 ASSETS = {
     "XXBT": {"altname": "XBT"}, "XETH": {"altname": "ETH"}, "ETH2": {"altname": "ETH2"},
     "ETH2.S": {"altname": "ETH2.S"}, "SOL": {"altname": "SOL"}, "ZEUR": {"altname": "EUR"},
-    "ZUSD": {"altname": "USD"}, "KFEE": {"altname": "FEE"},
+    "ZUSD": {"altname": "USD"}, "KFEE": {"altname": "FEE"}, "PEPE": {"altname": "PEPE"},
 }
 ASSET_PAIRS = {
     "XXBTZEUR": {"base": "XXBT", "quote": "ZEUR"}, "XXBTZUSD": {"base": "XXBT", "quote": "ZUSD"},
     "XETHZEUR": {"base": "XETH", "quote": "ZEUR"}, "SOLEUR": {"base": "SOL", "quote": "ZEUR"},
-    "ZEURZUSD": {"base": "ZEUR", "quote": "ZUSD"},
+    "ZEURZUSD": {"base": "ZEUR", "quote": "ZUSD"}, "PEPEEUR": {"base": "PEPE", "quote": "ZEUR"},
 }
 
 
